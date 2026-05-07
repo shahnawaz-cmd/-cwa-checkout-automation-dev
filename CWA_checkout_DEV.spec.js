@@ -226,6 +226,60 @@ test('CS-06 — 3D Secure success', async ({ page }) => {
   await page.close();
   console.log('✅ CS-06 COMPLETE');
 });
+test('CS-06B — 3D Secure failure', async ({ page }) => {
+  test.setTimeout(300000);
+
+  await page.goto(PREVIEW_URL, { waitUntil: 'domcontentloaded' });
+  await detectPreviewPage(page);
+
+  await page.getByRole('button', { name: 'Access Records' }).click();
+  await page.getByRole('textbox', { name: 'Email Address *' }).fill(`test${Date.now()}@example.com`);
+  await page.getByRole('textbox', { name: 'Email Address *' }).press('Enter');
+
+  await page.waitForURL('**/members/checkout**', { timeout: 90000 });
+  await page.getByRole('textbox', { name: 'Enter your name' }).fill('Shahnawaz');
+
+  // 3DS failure card: triggers 3DS challenge but authentication fails
+  await page.frameLocator('iframe[title="Secure card number input frame"]').getByRole('textbox', { name: 'Credit or debit card number' }).fill('4000008260003178');
+  await page.frameLocator('iframe[title="Secure expiration date input frame"]').getByRole('textbox', { name: 'Credit or debit card' }).fill('02 / 656');
+  await page.frameLocator('iframe[title="Secure CVC input frame"]').getByRole('textbox', { name: 'Credit or debit card CVC/CVV' }).fill('265');
+
+  await page.getByRole('textbox', { name: 'ZIP / Postal Code*' }).fill('74900');
+  await page.getByRole('button', { name: 'Pay $' }).click();
+
+  // Poll for 3DS fail button across all frames (up to 60s)
+  console.log('⏳ Polling for 3DS challenge button...');
+  let clicked = false;
+  const deadline = Date.now() + 60000;
+  while (!clicked && Date.now() < deadline) {
+    await page.waitForTimeout(2000);
+    for (const f of page.frames()) {
+      try {
+        const el = await f.$('#test-source-fail-3ds');
+        if (el) {
+          await el.click();
+          clicked = true;
+          console.log(`✅ 3DS fail clicked in frame: ${f.url().substring(0, 80)}`);
+          break;
+        }
+      } catch (_) {}
+    }
+  }
+
+  if (!clicked) console.log('⚠️ 3DS fail button not found after 60s');
+
+  // Wait for stripe error log API after 3DS failure
+  console.log('⏳ Waiting for log_stripe_error API...');
+  const stripeErrRes = await page.waitForResponse(
+    res => res.url().includes('api-cwa/log_stripe_error'),
+    { timeout: 30000 }
+  );
+  const stripeErrData = await stripeErrRes.json().catch(() => ({}));
+  console.log('📥 log_stripe_error Response:', JSON.stringify(stripeErrData, null, 2));
+  console.log('✅ CS-06B COMPLETE — 3DS failure and error captured');
+  await page.close();
+});
+
 test('CS-07 — Coupon validation and Successful Checkout', async ({ page }) => {
   test.setTimeout(300000);
 
