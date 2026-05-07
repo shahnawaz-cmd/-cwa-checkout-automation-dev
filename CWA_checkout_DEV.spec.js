@@ -1,4 +1,4 @@
-﻿const { test, expect } = require('@playwright/test');
+const { test, expect } = require('@playwright/test');
 const path = require('path');
 const fs = require('fs');
 
@@ -52,6 +52,30 @@ async function completeCheckout(page, cardNum = '5454545454545454', expiry = '02
   await page.getByRole('button', { name: /^pay \$/i }).click();
 }
 
+// ─── Shared: navigate Preview → Checkout and record timing ───────────────────
+async function navigateToCheckout(page, email) {
+  const t0 = Date.now();
+
+  await page.goto(PREVIEW_URL, { waitUntil: 'domcontentloaded' });
+  await detectPreviewPage(page);
+  await page.waitForSelector('button', { state: 'visible', timeout: 10000 });
+  await page.getByRole('button', { name: /access records/i }).first().click();
+  await page.waitForSelector('input[type="email"]', { state: 'visible', timeout: 10000 });
+  await page.locator('input[type="email"]').first().fill(email);
+
+  // Timer 2: Proceed to Checkout click → checkout page (preloader phase)
+  const t1 = Date.now();
+  await page.getByRole('button', { name: /proceed to checkout/i }).click();
+  await page.waitForURL('**/members/checkout**', { timeout: 90000 });
+
+  const totalElapsed = ((Date.now() - t0) / 1000).toFixed(2);
+  const preloaderElapsed = ((Date.now() - t1) / 1000).toFixed(2);
+
+  console.log('⏱️ Preview → Checkout total time: ' + totalElapsed + 's');
+  console.log('⏱️ Proceed click → Checkout (preloader) time: ' + preloaderElapsed + 's');
+  test.info().annotations.push({ type: 'Preview->Checkout Total Time', description: totalElapsed + 's' });
+  test.info().annotations.push({ type: 'Preloader->Checkout Time', description: preloaderElapsed + 's' });
+}
 // ─── Test Cases ───────────────────────────────────────────────────────────────
 
 test('CS-01 — Successful Checkout', async ({ page }) => {
@@ -72,15 +96,8 @@ test('CS-01 — Successful Checkout', async ({ page }) => {
     }
   });
 
-  await page.goto(PREVIEW_URL, { waitUntil: 'domcontentloaded' });
-  await detectPreviewPage(page);
-  await page.waitForSelector('button', { state: 'visible', timeout: 10000 });
-  await page.getByRole('button', { name: /access records/i }).first().click();
-  await page.waitForSelector('input[type="email"]', { state: 'visible', timeout: 10000 });
-  await page.locator('input[type="email"]').first().fill(`test${Date.now()}@example.com`);
-  await page.getByRole('button', { name: /proceed to checkout/i }).click();
-
-  await page.waitForURL('**/members/checkout**', { timeout: 90000 });
+  const email = `test${Date.now()}@example.com`;
+  await navigateToCheckout(page, email);
 
   const paymentUpdatePromise = page.waitForResponse(
     res => res.url().includes('api-cwa/payment-update'), { timeout: 60000 }
@@ -109,14 +126,8 @@ test('CS-02 — Declined card', async ({ page, context }) => {
     }
   });
 
-  await page.goto(PREVIEW_URL, { waitUntil: 'domcontentloaded' });
-  await detectPreviewPage(page);
-  await page.waitForSelector('button', { state: 'visible', timeout: 10000 });
-  await page.getByRole('button', { name: /access records/i }).first().click();
-  await page.waitForSelector('input[type="email"]', { state: 'visible', timeout: 10000 });
-  await page.locator('input[type="email"]').first().fill(`test${Date.now()}@example.com`);
-  await page.getByRole('button', { name: /proceed to checkout/i }).click();
-  await page.waitForURL('**/members/checkout**', { timeout: 90000 });
+  const email = `test${Date.now()}@example.com`;
+  await navigateToCheckout(page, email);
   await completeCheckout(page, '4000000000000002');
   await waitForDeclineError(page);
   console.log('✅ CS-02 COMPLETE');
@@ -131,14 +142,8 @@ test('CS-03 — Insufficient funds', async ({ page, context }) => {
     }
   });
 
-  await page.goto(PREVIEW_URL, { waitUntil: 'domcontentloaded' });
-  await detectPreviewPage(page);
-  await page.waitForSelector('button', { state: 'visible', timeout: 10000 });
-  await page.getByRole('button', { name: /access records/i }).first().click();
-  await page.waitForSelector('input[type="email"]', { state: 'visible', timeout: 10000 });
-  await page.locator('input[type="email"]').first().fill(`test${Date.now()}@example.com`);
-  await page.getByRole('button', { name: /proceed to checkout/i }).click();
-  await page.waitForURL('**/members/checkout**', { timeout: 90000 });
+  const email = `test${Date.now()}@example.com`;
+  await navigateToCheckout(page, email);
   await completeCheckout(page, '4000000000009995');
   await waitForDeclineError(page);
   console.log('✅ CS-03 COMPLETE');
@@ -153,14 +158,8 @@ test('CS-04 — Expired card', async ({ page, context }) => {
     }
   });
 
-  await page.goto(PREVIEW_URL, { waitUntil: 'domcontentloaded' });
-  await detectPreviewPage(page);
-  await page.waitForSelector('button', { state: 'visible', timeout: 10000 });
-  await page.getByRole('button', { name: /access records/i }).first().click();
-  await page.waitForSelector('input[type="email"]', { state: 'visible', timeout: 10000 });
-  await page.locator('input[type="email"]').first().fill(`test${Date.now()}@example.com`);
-  await page.getByRole('button', { name: /proceed to checkout/i }).click();
-  await page.waitForURL('**/members/checkout**', { timeout: 90000 });
+  const email = `test${Date.now()}@example.com`;
+  await navigateToCheckout(page, email);
   await completeCheckout(page, '4000000000000069');
   await waitForDeclineError(page);
   console.log('✅ CS-04 COMPLETE');
@@ -175,14 +174,8 @@ test('CS-05 — Wrong CVC', async ({ page, context }) => {
     }
   });
 
-  await page.goto(PREVIEW_URL, { waitUntil: 'domcontentloaded' });
-  await detectPreviewPage(page);
-  await page.waitForSelector('button', { state: 'visible', timeout: 10000 });
-  await page.getByRole('button', { name: /access records/i }).first().click();
-  await page.waitForSelector('input[type="email"]', { state: 'visible', timeout: 10000 });
-  await page.locator('input[type="email"]').first().fill(`test${Date.now()}@example.com`);
-  await page.getByRole('button', { name: /proceed to checkout/i }).click();
-  await page.waitForURL('**/members/checkout**', { timeout: 90000 });
+  const email = `test${Date.now()}@example.com`;
+  await navigateToCheckout(page, email);
   await completeCheckout(page, '4000000000000127', '1234', '999');
   await waitForDeclineError(page);
   console.log('✅ CS-05 COMPLETE');
@@ -191,14 +184,8 @@ test('CS-05 — Wrong CVC', async ({ page, context }) => {
 test('CS-06 — 3D Secure success', async ({ page }) => {
   test.setTimeout(300000);
 
-  await page.goto(PREVIEW_URL, { waitUntil: 'domcontentloaded' });
-  await detectPreviewPage(page);
-
-  await page.getByRole('button', { name: 'Access Records' }).click();
-  await page.getByRole('textbox', { name: 'Email Address *' }).fill(`test${Date.now()}@example.com`);
-  await page.getByRole('textbox', { name: 'Email Address *' }).press('Enter');
-
-  await page.waitForURL('**/members/checkout**', { timeout: 90000 });
+  const email = `test${Date.now()}@example.com`;
+  await navigateToCheckout(page, email);
 
   // Wait for name field to be ready before filling
   await page.waitForSelector('input[placeholder="Enter your name"]', { state: 'visible', timeout: 15000 });
@@ -255,14 +242,8 @@ test('CS-06 — 3D Secure success', async ({ page }) => {
 test('CS-06B — 3D Secure failure', async ({ page }) => {
   test.setTimeout(300000);
 
-  await page.goto(PREVIEW_URL, { waitUntil: 'domcontentloaded' });
-  await detectPreviewPage(page);
-
-  await page.getByRole('button', { name: 'Access Records' }).click();
-  await page.getByRole('textbox', { name: 'Email Address *' }).fill(`test${Date.now()}@example.com`);
-  await page.getByRole('textbox', { name: 'Email Address *' }).press('Enter');
-
-  await page.waitForURL('**/members/checkout**', { timeout: 90000 });
+  const email = `test${Date.now()}@example.com`;
+  await navigateToCheckout(page, email);
 
   await page.waitForSelector('input[placeholder="Enter your name"]', { state: 'visible', timeout: 15000 });
   await page.getByRole('textbox', { name: 'Enter your name' }).fill('Shahnawaz');
@@ -336,14 +317,8 @@ test('CS-07 — Coupon validation and Successful Checkout', async ({ page }) => 
     }
   });
 
-  await page.goto(PREVIEW_URL, { waitUntil: 'domcontentloaded' });
-  await detectPreviewPage(page);
-  await page.waitForSelector('button', { state: 'visible', timeout: 10000 });
-  await page.getByRole('button', { name: /access records/i }).first().click();
-  await page.waitForSelector('input[type="email"]', { state: 'visible', timeout: 10000 });
-  await page.locator('input[type="email"]').first().fill(`test${Date.now()}@example.com`);
-  await page.getByRole('button', { name: /proceed to checkout/i }).click();
-  await page.waitForURL('**/members/checkout**', { timeout: 90000 });
+  const email = `test${Date.now()}@example.com`;
+  await navigateToCheckout(page, email);
 
   // Wait for coupon field to be ready
   await page.waitForSelector('[placeholder*="coupon" i]', { state: 'visible', timeout: 15000 });
@@ -396,14 +371,8 @@ test('CS-08 — Same-session duplicate purchase redirect', async ({ page }) => {
     }
   });
 
-  await page.goto(PREVIEW_URL, { waitUntil: 'domcontentloaded' });
-  await detectPreviewPage(page);
-  await page.waitForSelector('button', { state: 'visible', timeout: 10000 });
-  await page.getByRole('button', { name: /access records/i }).first().click();
-  await page.waitForSelector('input[type="email"]', { state: 'visible', timeout: 10000 });
-  await page.locator('input[type="email"]').first().fill(email);
-  await page.getByRole('button', { name: /proceed to checkout/i }).click();
-  await page.waitForURL('**/members/checkout**', { timeout: 90000 });
+
+  await navigateToCheckout(page, email);
 
   const paymentUpdatePromise = page.waitForResponse(
     res => res.url().includes('api-cwa/payment-update'), { timeout: 60000 }
@@ -455,14 +424,8 @@ test('CS-09 — Invalid coupon code', async ({ page }) => {
     }
   });
 
-  await page.goto(PREVIEW_URL, { waitUntil: 'domcontentloaded' });
-  await detectPreviewPage(page);
-  await page.waitForSelector('button', { state: 'visible', timeout: 10000 });
-  await page.getByRole('button', { name: /access records/i }).first().click();
-  await page.waitForSelector('input[type="email"]', { state: 'visible', timeout: 10000 });
-  await page.locator('input[type="email"]').first().fill(`test${Date.now()}@example.com`);
-  await page.getByRole('button', { name: /proceed to checkout/i }).click();
-  await page.waitForURL('**/members/checkout**', { timeout: 90000 });
+  const email = `test${Date.now()}@example.com`;
+  await navigateToCheckout(page, email);
 
   await page.waitForSelector('[placeholder*="coupon" i]', { state: 'visible', timeout: 15000 });
   await page.getByPlaceholder(/Enter your coupon/i).fill('FAKE123');
@@ -493,14 +456,8 @@ test('CS-09 — Invalid coupon code', async ({ page }) => {
 test('CS-10 — Empty coupon submit', async ({ page }) => {
   test.setTimeout(300000);
 
-  await page.goto(PREVIEW_URL, { waitUntil: 'domcontentloaded' });
-  await detectPreviewPage(page);
-  await page.waitForSelector('button', { state: 'visible', timeout: 10000 });
-  await page.getByRole('button', { name: /access records/i }).first().click();
-  await page.waitForSelector('input[type="email"]', { state: 'visible', timeout: 10000 });
-  await page.locator('input[type="email"]').first().fill(`test${Date.now()}@example.com`);
-  await page.getByRole('button', { name: /proceed to checkout/i }).click();
-  await page.waitForURL('**/members/checkout**', { timeout: 90000 });
+  const email = `test${Date.now()}@example.com`;
+  await navigateToCheckout(page, email);
   await page.waitForSelector('[placeholder*="coupon" i]', { state: 'visible', timeout: 15000 });
 
   let apiCalled = false;
@@ -531,14 +488,8 @@ test('CS-11 — Stolen card', async ({ page, context }) => {
     }
   });
 
-  await page.goto(PREVIEW_URL, { waitUntil: 'domcontentloaded' });
-  await detectPreviewPage(page);
-  await page.waitForSelector('button', { state: 'visible', timeout: 10000 });
-  await page.getByRole('button', { name: /access records/i }).first().click();
-  await page.waitForSelector('input[type="email"]', { state: 'visible', timeout: 10000 });
-  await page.locator('input[type="email"]').first().fill(`test${Date.now()}@example.com`);
-  await page.getByRole('button', { name: /proceed to checkout/i }).click();
-  await page.waitForURL('**/members/checkout**', { timeout: 90000 });
+  const email = `test${Date.now()}@example.com`;
+  await navigateToCheckout(page, email);
   await completeCheckout(page, '4000000000009979');
   await waitForDeclineError(page);
   console.log('✅ CS-11 COMPLETE — Stolen card declined');
@@ -553,14 +504,8 @@ test('CS-12 — Do Not Honor (generic decline)', async ({ page, context }) => {
     }
   });
 
-  await page.goto(PREVIEW_URL, { waitUntil: 'domcontentloaded' });
-  await detectPreviewPage(page);
-  await page.waitForSelector('button', { state: 'visible', timeout: 10000 });
-  await page.getByRole('button', { name: /access records/i }).first().click();
-  await page.waitForSelector('input[type="email"]', { state: 'visible', timeout: 10000 });
-  await page.locator('input[type="email"]').first().fill(`test${Date.now()}@example.com`);
-  await page.getByRole('button', { name: /proceed to checkout/i }).click();
-  await page.waitForURL('**/members/checkout**', { timeout: 90000 });
+  const email = `test${Date.now()}@example.com`;
+  await navigateToCheckout(page, email);
   await completeCheckout(page, '4000000000000341');
   await waitForDeclineError(page);
   console.log('✅ CS-12 COMPLETE — Do Not Honor card declined');
@@ -575,14 +520,8 @@ test('CS-13 — Card processing error', async ({ page, context }) => {
     }
   });
 
-  await page.goto(PREVIEW_URL, { waitUntil: 'domcontentloaded' });
-  await detectPreviewPage(page);
-  await page.waitForSelector('button', { state: 'visible', timeout: 10000 });
-  await page.getByRole('button', { name: /access records/i }).first().click();
-  await page.waitForSelector('input[type="email"]', { state: 'visible', timeout: 10000 });
-  await page.locator('input[type="email"]').first().fill(`test${Date.now()}@example.com`);
-  await page.getByRole('button', { name: /proceed to checkout/i }).click();
-  await page.waitForURL('**/members/checkout**', { timeout: 90000 });
+  const email = `test${Date.now()}@example.com`;
+  await navigateToCheckout(page, email);
   await completeCheckout(page, '4000000000000119');
   await waitForDeclineError(page);
   console.log('✅ CS-13 COMPLETE — Processing error card declined');
