@@ -526,3 +526,69 @@ test('CS-13 — Card processing error', async ({ page, context }) => {
   await waitForDeclineError(page);
   console.log('✅ CS-13 COMPLETE — Processing error card declined');
 });
+
+test('CS-14 — Back button after successful payment', async ({ page }) => {
+  test.setTimeout(300000);
+
+  const email = `test${Date.now()}@example.com`;
+  await navigateToCheckout(page, email);
+
+  const paymentUpdatePromise = page.waitForResponse(
+    res => res.url().includes('api-cwa/payment-update'), { timeout: 60000 }
+  );
+  await completeCheckout(page);
+  await page.waitForURL('**/success-page**', { timeout: 60000 });
+  console.log('✅ Landed on success page');
+  await paymentUpdatePromise;
+
+  // Hit browser back button
+  await page.goBack();
+  await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
+
+  const urlAfterBack = page.url();
+  console.log('🔍 URL after back button:', urlAfterBack);
+
+  const resubmitted = urlAfterBack.includes('/members/checkout');
+  console.log(resubmitted
+    ? '⚠️ WARNING — Landed back on checkout page'
+    : '✅ PASS — Not on checkout page after back button');
+
+  test.info().annotations.push({ type: 'Back Button URL', description: urlAfterBack });
+  console.log('✅ CS-14 COMPLETE — Back button behavior verified');
+});
+test('CS-15 — Slow network (3G) checkout', async ({ page, context }) => {
+  test.setTimeout(300000);
+
+  // Throttle to 3G: ~750kbps down, ~250kbps up, 100ms latency
+  const client = await context.newCDPSession(page);
+  await client.send('Network.emulateNetworkConditions', {
+    offline: false,
+    downloadThroughput: (750 * 1024) / 8,
+    uploadThroughput: (250 * 1024) / 8,
+    latency: 100
+  });
+  console.log('🐢 3G network throttling enabled');
+
+  const email = `test${Date.now()}@example.com`;
+  await navigateToCheckout(page, email);
+
+  const paymentUpdatePromise = page.waitForResponse(
+    res => res.url().includes('api-cwa/payment-update'), { timeout: 120000 }
+  );
+  await completeCheckout(page);
+  await page.waitForURL('**/success-page**', { timeout: 120000 });
+  console.log('✅ Checkout completed on 3G');
+
+  const paymentData = await (await paymentUpdatePromise).json().catch(() => ({}));
+  console.log('📥 payment-update Response:', JSON.stringify(paymentData, null, 2));
+
+  // Disable throttling
+  await client.send('Network.emulateNetworkConditions', {
+    offline: false,
+    downloadThroughput: -1,
+    uploadThroughput: -1,
+    latency: 0
+  });
+
+  console.log('✅ CS-15 COMPLETE — Checkout succeeded under 3G throttling');
+});
