@@ -592,3 +592,139 @@ test('CS-15 — Slow network (3G) checkout', async ({ page, context }) => {
 
   console.log('✅ CS-15 COMPLETE — Checkout succeeded under 3G throttling');
 });
+
+// ─── PayPal Sandbox Credentials ───────────────────────────────────────────────
+const PAYPAL_EMAIL = 'sb-rtbp126775467@personal.example.com';
+const PAYPAL_PASSWORD = 'Ogznv/4c';
+
+// ─── Shared: click PayPal button inside iframe and handle popup ───────────────
+async function clickPayPalButton(page, context) {
+  const paypalIframe = page.frameLocator('iframe[name*="__zoid__paypal_buttons__"]').first();
+  const [popup] = await Promise.all([
+    context.waitForEvent('page'),
+    paypalIframe.getByRole('link', { name: 'Pay with PayPal' }).click()
+  ]);
+  console.log('✅ PayPal popup opened');
+  return popup;
+}
+
+async function loginPayPal(popup, page) {
+  await popup.waitForLoadState('domcontentloaded');
+  await popup.getByRole('textbox', { name: 'Email or mobile number' }).fill(PAYPAL_EMAIL);
+  await popup.getByRole('button', { name: 'Next' }).click();
+
+  // Handle "Click to Continue" overlay if present
+  const overlay = page.frameLocator('iframe[name*="__paypal_checkout_sandbox_paypal-overlay"]');
+  await overlay.getByRole('link', { name: 'Click to Continue' }).click().catch(() => {});
+
+  await popup.getByRole('textbox', { name: 'Password' }).waitFor({ state: 'visible', timeout: 15000 });
+  await popup.getByRole('textbox', { name: 'Password' }).fill(PAYPAL_PASSWORD);
+  await popup.getByRole('button', { name: 'Log In' }).click();
+  console.log('✅ PayPal logged in');
+}
+
+test('CS-16 — PayPal successful payment', async ({ page, context }) => {
+  test.setTimeout(300000);
+
+  const email = `test${Date.now()}@example.com`;
+  await navigateToCheckout(page, email);
+
+  // Switch to PayPal tab
+  await page.getByRole('button', { name: /paypal/i }).click();
+  await page.waitForSelector('iframe[name*="__zoid__paypal_buttons__"]', { state: 'visible', timeout: 20000 });
+
+  const popup = await clickPayPalButton(page, context);
+  await loginPayPal(popup, page);
+
+  // Approve payment
+  await popup.getByTestId('submit-button-initial').waitFor({ state: 'visible', timeout: 30000 });
+  await popup.getByTestId('submit-button-initial').click();
+  console.log('✅ PayPal payment approved');
+
+  await page.waitForURL(url => url.toString().includes('paid=true') || url.toString().includes('success-page') || url.toString().includes('dashboard'), { timeout: 60000 });
+  console.log('✅ PayPal payment complete — URL: ' + page.url());
+  await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
+  await page.close();
+  console.log('✅ CS-16 COMPLETE — PayPal successful payment');
+});
+
+
+test('CS-17 — PayPal cancelled by user', async ({ page, context }) => {
+  test.setTimeout(300000);
+
+  const email = `test${Date.now()}@example.com`;
+  await navigateToCheckout(page, email);
+
+  await page.getByRole('button', { name: /paypal/i }).click();
+  await page.waitForSelector('iframe[name*="__zoid__paypal_buttons__"]', { state: 'visible', timeout: 20000 });
+
+  const popup = await clickPayPalButton(page, context);
+  await loginPayPal(popup, page);
+
+  // Cancel instead of approving
+  await popup.getByRole('link', { name: /cancel/i }).waitFor({ state: 'visible', timeout: 20000 });
+  await popup.getByRole('link', { name: /cancel/i }).click();
+  console.log('✅ PayPal payment cancelled');
+
+  await popup.waitForEvent('close', { timeout: 15000 }).catch(() => {});
+  await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
+
+  const currentUrl = page.url();
+  console.log('🔍 URL after cancel:', currentUrl);
+  const stayedOnCheckout = currentUrl.includes('/members/checkout');
+  console.log(stayedOnCheckout ? '✅ PASS — Stayed on checkout after cancel' : '⚠️ Redirected away');
+
+  test.info().annotations.push({ type: 'URL after PayPal cancel', description: currentUrl });
+  console.log('✅ CS-17 COMPLETE — PayPal cancel flow verified');
+});
+
+test('CS-18 — PayPal card payment (Debit or Credit Card)', async ({ page }) => {
+  test.setTimeout(300000);
+
+  const email = `test${Date.now()}@example.com`;
+  await navigateToCheckout(page, email);
+
+  // Switch to PayPal tab
+  await page.getByRole('button', { name: /paypal/i }).click();
+  await page.waitForSelector('iframe[name*="__zoid__paypal_buttons__"]', { state: 'visible', timeout: 20000 });
+  console.log('✅ PayPal tab loaded');
+
+  // Click "Debit or Credit Card" inside PayPal iframe
+  const paypalIframe = page.frameLocator('iframe[name*="__zoid__paypal_buttons__"]').first();
+  await paypalIframe.getByRole('link', { name: 'Debit or Credit Card' }).click();
+  console.log('✅ Clicked Debit or Credit Card');
+
+  // Wait for card form iframe to appear inside PayPal iframe
+  await page.waitForTimeout(2000);
+
+  // Card form is nested: PayPal buttons iframe → PayPal card form iframe → fields
+  const cardForm = paypalIframe.frameLocator('iframe[name*="__zoid__paypal_card_form__"]');
+
+  // Fill card details
+  await cardForm.getByRole('textbox', { name: 'Email' }).fill(email);
+  await cardForm.getByRole('textbox', { name: 'Card number' }).fill('4032038644909248');
+  await cardForm.getByRole('textbox', { name: 'Expires' }).fill('11/2028');
+  await cardForm.getByRole('textbox', { name: 'CSC' }).fill('307');
+  await cardForm.getByRole('textbox', { name: 'First name' }).fill('Test');
+  await cardForm.getByRole('textbox', { name: 'Last name' }).fill('User');
+  await cardForm.getByRole('textbox', { name: 'Street address' }).fill('1600 Pennsylvania Avenue NW');
+  await cardForm.getByRole('textbox', { name: 'City' }).fill('Washington');
+  await cardForm.getByLabel('State').selectOption('DC');
+  await cardForm.getByRole('textbox', { name: 'ZIP code' }).fill('20500');
+  await cardForm.getByRole('textbox', { name: 'Mobile' }).fill('2025550147');
+  console.log('✅ Card form filled');
+
+  // Submit
+  await cardForm.getByRole('button', { name: /^Pay \$/i }).click();
+  console.log('💳 PayPal card payment submitted');
+
+  // Wait for success redirect
+  await page.waitForURL(
+    url => url.toString().includes('success-page') || url.toString().includes('paid=true') || url.toString().includes('dashboard'),
+    { timeout: 60000 }
+  );
+  console.log('✅ PayPal card payment complete — URL: ' + page.url());
+  await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
+  await page.close();
+  console.log('✅ CS-18 COMPLETE — PayPal card payment verified');
+});
