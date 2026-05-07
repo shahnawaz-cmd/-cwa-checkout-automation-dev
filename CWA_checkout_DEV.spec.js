@@ -14,12 +14,26 @@ async function detectPreviewPage(page) {
   return raw;
 }
 
+// ─── Shared: wait for error message after declined payment ────────────────────
+async function waitForDeclineError(page) {
+  await page.waitForSelector(
+    '[class*="error"], [class*="alert"], [class*="decline"], text=/declined|failed|invalid|error/i',
+    { state: 'visible', timeout: 20000 }
+  ).catch(() => {});
+}
+
 // ─── Base Checkout Flow Logic ────────────────────────────────────────────────
 async function completeCheckout(page, cardNum = '5454545454545454', expiry = '0232', cvc = '123', zip = '12345') {
+  // Wait for name field
+  await page.waitForSelector('input[placeholder="Enter your name"]', { state: 'visible', timeout: 15000 });
   await page.locator('input[placeholder="Enter your name"]').fill('Test User');
-  
-  await page.waitForFunction(() => Array.from(document.querySelectorAll('iframe')).filter(f => f.src && f.src.includes('stripe.com')).length >= 3, { timeout: 30000 });
-  
+
+  // Wait for all 3 Stripe card iframes to mount
+  await page.waitForFunction(
+    () => Array.from(document.querySelectorAll('iframe')).filter(f => f.src && f.src.includes('stripe.com') && f.src.includes('componentName=card')).length >= 3,
+    { timeout: 30000 }
+  );
+
   let cardFrame, expiryFrame, cvcFrame;
   for (const frame of page.frames()) {
     if (!frame.url().includes('stripe.com')) continue;
@@ -27,14 +41,14 @@ async function completeCheckout(page, cardNum = '5454545454545454', expiry = '02
     else if (frame.url().includes('componentName=cardExpiry')) expiryFrame = frame;
     else if (frame.url().includes('componentName=cardCvc')) cvcFrame = frame;
   }
-  
+
   await cardFrame.locator('[name="cardnumber"]').fill(cardNum);
   await expiryFrame.locator('[name="exp-date"]').fill(expiry);
   await cvcFrame.locator('[name="cvc"]').fill(cvc);
-  
-  // Ensure postal code is filled
   await page.locator('#postal-code').fill(zip);
-  
+
+  // Wait for Pay button to be enabled
+  await page.waitForSelector('button:has-text("Pay $"):not([disabled])', { state: 'visible', timeout: 15000 });
   await page.getByRole('button', { name: /^pay \$/i }).click();
 }
 
@@ -42,8 +56,7 @@ async function completeCheckout(page, cardNum = '5454545454545454', expiry = '02
 
 test('CS-01 — Successful Checkout', async ({ page }) => {
   test.setTimeout(300000);
-  
-  // Intercept API on dashboard
+
   let dashboardApiPayload = null;
   let dashboardApiResponse = null;
   page.on('request', req => {
@@ -61,35 +74,31 @@ test('CS-01 — Successful Checkout', async ({ page }) => {
 
   await page.goto(PREVIEW_URL, { waitUntil: 'domcontentloaded' });
   await detectPreviewPage(page);
+  await page.waitForSelector('button', { state: 'visible', timeout: 10000 });
   await page.getByRole('button', { name: /access records/i }).first().click();
+  await page.waitForSelector('input[type="email"]', { state: 'visible', timeout: 10000 });
   await page.locator('input[type="email"]').first().fill(`test${Date.now()}@example.com`);
   await page.getByRole('button', { name: /proceed to checkout/i }).click();
 
   await page.waitForURL('**/members/checkout**', { timeout: 90000 });
-  await completeCheckout(page);
 
+  const paymentUpdatePromise = page.waitForResponse(
+    res => res.url().includes('api-cwa/payment-update'), { timeout: 60000 }
+  );
+  await completeCheckout(page);
   await page.waitForURL('**/success-page**', { timeout: 60000 });
   console.log('✅ Landed on success-page');
 
-  // Capture payment-update API response on success page
-  const paymentRes = await page.waitForResponse(
-    res => res.url().includes('api-cwa/payment-update'),
-    { timeout: 30000 }
-  );
-  const paymentData = await paymentRes.json().catch(() => ({}));
+  const paymentData = await (await paymentUpdatePromise).json().catch(() => ({}));
   console.log('📥 payment-update API Response:', JSON.stringify(paymentData, null, 2));
-
   expect(paymentData).not.toBeNull();
   console.log('✅ payment-update data captured');
 
-  // Navigate to dashboard
   await page.goto(`${BASE_URL}members/dashboard`, { waitUntil: 'domcontentloaded' });
+  await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
   console.log('✅ Landed on dashboard');
-
-  // Wait 5 seconds
-  await page.waitForTimeout(5000);
   console.log('✅ CS-01 SUCCESS — Finished');
-  });
+});
 
 test('CS-02 — Declined card', async ({ page, context }) => {
   test.setTimeout(300000);
@@ -102,14 +111,14 @@ test('CS-02 — Declined card', async ({ page, context }) => {
 
   await page.goto(PREVIEW_URL, { waitUntil: 'domcontentloaded' });
   await detectPreviewPage(page);
+  await page.waitForSelector('button', { state: 'visible', timeout: 10000 });
   await page.getByRole('button', { name: /access records/i }).first().click();
+  await page.waitForSelector('input[type="email"]', { state: 'visible', timeout: 10000 });
   await page.locator('input[type="email"]').first().fill(`test${Date.now()}@example.com`);
   await page.getByRole('button', { name: /proceed to checkout/i }).click();
-
   await page.waitForURL('**/members/checkout**', { timeout: 90000 });
   await completeCheckout(page, '4000000000000002');
-  
-  await page.waitForTimeout(10000);
+  await waitForDeclineError(page);
   console.log('✅ CS-02 COMPLETE');
 });
 
@@ -124,14 +133,14 @@ test('CS-03 — Insufficient funds', async ({ page, context }) => {
 
   await page.goto(PREVIEW_URL, { waitUntil: 'domcontentloaded' });
   await detectPreviewPage(page);
+  await page.waitForSelector('button', { state: 'visible', timeout: 10000 });
   await page.getByRole('button', { name: /access records/i }).first().click();
+  await page.waitForSelector('input[type="email"]', { state: 'visible', timeout: 10000 });
   await page.locator('input[type="email"]').first().fill(`test${Date.now()}@example.com`);
   await page.getByRole('button', { name: /proceed to checkout/i }).click();
-
   await page.waitForURL('**/members/checkout**', { timeout: 90000 });
   await completeCheckout(page, '4000000000009995');
-  
-  await page.waitForTimeout(10000);
+  await waitForDeclineError(page);
   console.log('✅ CS-03 COMPLETE');
 });
 
@@ -146,14 +155,14 @@ test('CS-04 — Expired card', async ({ page, context }) => {
 
   await page.goto(PREVIEW_URL, { waitUntil: 'domcontentloaded' });
   await detectPreviewPage(page);
+  await page.waitForSelector('button', { state: 'visible', timeout: 10000 });
   await page.getByRole('button', { name: /access records/i }).first().click();
+  await page.waitForSelector('input[type="email"]', { state: 'visible', timeout: 10000 });
   await page.locator('input[type="email"]').first().fill(`test${Date.now()}@example.com`);
   await page.getByRole('button', { name: /proceed to checkout/i }).click();
-
   await page.waitForURL('**/members/checkout**', { timeout: 90000 });
   await completeCheckout(page, '4000000000000069');
-  
-  await page.waitForTimeout(10000);
+  await waitForDeclineError(page);
   console.log('✅ CS-04 COMPLETE');
 });
 
@@ -168,14 +177,14 @@ test('CS-05 — Wrong CVC', async ({ page, context }) => {
 
   await page.goto(PREVIEW_URL, { waitUntil: 'domcontentloaded' });
   await detectPreviewPage(page);
+  await page.waitForSelector('button', { state: 'visible', timeout: 10000 });
   await page.getByRole('button', { name: /access records/i }).first().click();
+  await page.waitForSelector('input[type="email"]', { state: 'visible', timeout: 10000 });
   await page.locator('input[type="email"]').first().fill(`test${Date.now()}@example.com`);
   await page.getByRole('button', { name: /proceed to checkout/i }).click();
-
   await page.waitForURL('**/members/checkout**', { timeout: 90000 });
-  await completeCheckout(page, '4000000000000127', '1234', '999'); // Wrong CVC
-  
-  await page.waitForTimeout(10000);
+  await completeCheckout(page, '4000000000000127', '1234', '999');
+  await waitForDeclineError(page);
   console.log('✅ CS-05 COMPLETE');
 });
 
@@ -310,7 +319,6 @@ test('CS-06B — 3D Secure failure', async ({ page }) => {
 test('CS-07 — Coupon validation and Successful Checkout', async ({ page }) => {
   test.setTimeout(300000);
 
-  // Intercept Coupon Validation API
   let couponApiPayload = null;
   let couponApiResponse = null;
   page.on('request', req => {
@@ -320,7 +328,6 @@ test('CS-07 — Coupon validation and Successful Checkout', async ({ page }) => 
     }
   });
 
-  // Intercept Payment Intent API
   let paymentIntentResponse = null;
   page.on('response', async res => {
     if (res.url().includes('api/checkout/payment-intent')) {
@@ -331,25 +338,19 @@ test('CS-07 — Coupon validation and Successful Checkout', async ({ page }) => 
 
   await page.goto(PREVIEW_URL, { waitUntil: 'domcontentloaded' });
   await detectPreviewPage(page);
-  await page.waitForTimeout(2000);
-
+  await page.waitForSelector('button', { state: 'visible', timeout: 10000 });
   await page.getByRole('button', { name: /access records/i }).first().click();
-  await page.waitForTimeout(1000);
-
+  await page.waitForSelector('input[type="email"]', { state: 'visible', timeout: 10000 });
   await page.locator('input[type="email"]').first().fill(`test${Date.now()}@example.com`);
-  await page.waitForTimeout(1000);
-
   await page.getByRole('button', { name: /proceed to checkout/i }).click();
   await page.waitForURL('**/members/checkout**', { timeout: 90000 });
-  await page.waitForTimeout(2000);
 
-  // Fill coupon and set up promise before clicking Apply
+  // Wait for coupon field to be ready
+  await page.waitForSelector('[placeholder*="coupon" i]', { state: 'visible', timeout: 15000 });
   await page.getByPlaceholder(/Enter your coupon/i).fill('get20');
-  await page.waitForTimeout(1000);
 
   const couponPromise = page.waitForResponse(
-    res => res.url().includes('api-cwa/coupon_validation'),
-    { timeout: 30000 }
+    res => res.url().includes('api-cwa/coupon_validation'), { timeout: 30000 }
   );
   await page.getByRole('button', { name: /apply/i }).click();
   console.log('⏳ Waiting for coupon API response...');
@@ -359,140 +360,85 @@ test('CS-07 — Coupon validation and Successful Checkout', async ({ page }) => 
   console.log('📥 Coupon API Response:', JSON.stringify(couponApiResponse, null, 2));
   expect(couponApiResponse).not.toBeNull();
 
-  // Wait 4 sec for frontend to render success message after coupon API returns
-  await page.waitForTimeout(4000);
-
-  // Wait for coupon success message visible on UI
+  // Wait for coupon success message on UI
   await page.waitForSelector(
     'text=/coupon applied|discount applied|success/i',
-    { timeout: 15000 }
+    { state: 'visible', timeout: 15000 }
   ).catch(() => console.log('⚠️ Coupon success message not found, continuing...'));
   console.log('✅ Coupon applied — success message confirmed');
-  await page.waitForTimeout(2000);
 
-  // payment-intent is captured by the page.on('response') listener above;
-  // poll briefly in case it fires slightly after coupon response
-  console.log('⏳ Waiting for payment-intent API...');
+  // Wait for payment-intent (captured by listener); poll up to 15s
   const piDeadline = Date.now() + 15000;
   while (!paymentIntentResponse && Date.now() < piDeadline) {
-    await page.waitForTimeout(500);
+    await new Promise(r => setTimeout(r, 300));
   }
   console.log('📥 Payment Intent captured:', JSON.stringify(paymentIntentResponse, null, 2));
   expect(paymentIntentResponse).not.toBeNull();
   console.log('✅ Payment intent loaded');
-  await page.waitForTimeout(2000);
-  await page.waitForTimeout(2000);
 
-  // Now fill out the card form
-  await page.locator('input[placeholder="Enter your name"]').fill('Test User');
-  await page.waitForTimeout(1500);
-
-  await page.waitForFunction(
-    () => Array.from(document.querySelectorAll('iframe')).filter(f => f.src && f.src.includes('stripe.com')).length >= 3,
-    { timeout: 30000 }
-  );
-
-  let cardFrame, expiryFrame, cvcFrame;
-  for (const frame of page.frames()) {
-    if (!frame.url().includes('stripe.com')) continue;
-    if (frame.url().includes('componentName=cardNumber')) cardFrame = frame;
-    else if (frame.url().includes('componentName=cardExpiry')) expiryFrame = frame;
-    else if (frame.url().includes('componentName=cardCvc')) cvcFrame = frame;
-  }
-
-  await cardFrame.locator('[name="cardnumber"]').fill('5454545454545454');
-  await page.waitForTimeout(1000);
-
-  await expiryFrame.locator('[name="exp-date"]').fill('0232');
-  await page.waitForTimeout(1000);
-
-  await cvcFrame.locator('[name="cvc"]').fill('123');
-  await page.waitForTimeout(1000);
-
-  await page.locator('#postal-code').fill('12345');
-  await page.waitForTimeout(1500);
-
-  await page.getByRole('button', { name: /^pay \$/i }).click();
+  // Fill card form using shared completeCheckout helper (includes all smart waits)
+  await completeCheckout(page);
   console.log('💳 Payment submitted');
 
   await page.waitForURL('**/success-page**', { timeout: 60000 });
   console.log('✅ CS-07 SUCCESS — Coupon applied and payment complete');
 });
 
-
 test('CS-08 — Same-session duplicate purchase redirect', async ({ page }) => {
   test.setTimeout(300000);
 
   const email = `test${Date.now()}@example.com`;
 
-  // ── Step 1: Complete a full CS-01 checkout ──────────────────────────────────
-  let dashboardApiResponse = null;
   page.on('response', async res => {
     if (res.url().includes('api-cwa/get-dashboard-data')) {
-      dashboardApiResponse = await res.json().catch(() => ({}));
-      console.log('📥 Dashboard API Response:', JSON.stringify(dashboardApiResponse, null, 2));
+      const data = await res.json().catch(() => ({}));
+      console.log('📥 Dashboard API Response:', JSON.stringify(data, null, 2));
     }
   });
 
   await page.goto(PREVIEW_URL, { waitUntil: 'domcontentloaded' });
   await detectPreviewPage(page);
-  await page.waitForTimeout(2000);
-
+  await page.waitForSelector('button', { state: 'visible', timeout: 10000 });
   await page.getByRole('button', { name: /access records/i }).first().click();
-  await page.waitForTimeout(1500);
-
+  await page.waitForSelector('input[type="email"]', { state: 'visible', timeout: 10000 });
   await page.locator('input[type="email"]').first().fill(email);
-  await page.waitForTimeout(1000);
-
   await page.getByRole('button', { name: /proceed to checkout/i }).click();
   await page.waitForURL('**/members/checkout**', { timeout: 90000 });
-  await page.waitForTimeout(2000);
 
-
-  // Set up payment-update promise BEFORE submitting payment
   const paymentUpdatePromise = page.waitForResponse(
-    res => res.url().includes('api-cwa/payment-update'),
-    { timeout: 60000 }
+    res => res.url().includes('api-cwa/payment-update'), { timeout: 60000 }
   );
   await completeCheckout(page);
   await page.waitForURL('**/success-page**', { timeout: 60000 });
   console.log('✅ CS-01 flow complete — landed on success-page');
-  await page.waitForTimeout(3000);
 
-  const paymentRes = await paymentUpdatePromise;
-  const paymentData = await paymentRes.json().catch(() => ({}));
+  const paymentData = await (await paymentUpdatePromise).json().catch(() => ({}));
   console.log('📥 payment-update Response:', JSON.stringify(paymentData, null, 2));
-  await page.waitForTimeout(2000);
 
   await page.goto(`${BASE_URL}members/dashboard`, { waitUntil: 'domcontentloaded' });
+  await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
   console.log('✅ Landed on dashboard');
-  await page.waitForTimeout(4000);
 
-  // ── Step 2: Attempt duplicate purchase with same email in same session ───────
+  // Duplicate attempt
   console.log('🔄 Attempting duplicate purchase with same email:', email);
   await page.goto(PREVIEW_URL, { waitUntil: 'domcontentloaded' });
   await detectPreviewPage(page);
-  await page.waitForTimeout(2000);
-
+  await page.waitForSelector('button', { state: 'visible', timeout: 10000 });
   await page.getByRole('button', { name: /access records/i }).first().click();
-  await page.waitForTimeout(1500);
-
+  await page.waitForSelector('input[type="email"]', { state: 'visible', timeout: 10000 });
   await page.locator('input[type="email"]').first().fill(email);
-  await page.waitForTimeout(1000);
-
   await page.getByRole('button', { name: /proceed to checkout/i }).click();
-  await page.waitForTimeout(5000);
+
+  // Wait for navigation to settle
+  await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
 
   const currentUrl = page.url();
   console.log(`🔍 Current URL after duplicate attempt: ${currentUrl}`);
-  await page.waitForTimeout(3000);
 
   const redirectedToCheckout = currentUrl.includes('/members/checkout');
-  if (redirectedToCheckout) {
-    console.log('❌ FAIL — User was redirected to checkout (duplicate not blocked)');
-  } else {
-    console.log('✅ PASS — User was NOT redirected to checkout (duplicate blocked)');
-  }
+  console.log(redirectedToCheckout
+    ? '❌ FAIL — User was redirected to checkout (duplicate not blocked)'
+    : '✅ PASS — User was NOT redirected to checkout (duplicate blocked)');
 
   expect(redirectedToCheckout).toBe(false);
   console.log('✅ CS-08 COMPLETE — Same-session duplicate purchase redirect confirmed');
@@ -511,22 +457,18 @@ test('CS-09 — Invalid coupon code', async ({ page }) => {
 
   await page.goto(PREVIEW_URL, { waitUntil: 'domcontentloaded' });
   await detectPreviewPage(page);
-  await page.waitForTimeout(2000);
-
+  await page.waitForSelector('button', { state: 'visible', timeout: 10000 });
   await page.getByRole('button', { name: /access records/i }).first().click();
-  await page.waitForTimeout(1000);
+  await page.waitForSelector('input[type="email"]', { state: 'visible', timeout: 10000 });
   await page.locator('input[type="email"]').first().fill(`test${Date.now()}@example.com`);
-  await page.waitForTimeout(1000);
   await page.getByRole('button', { name: /proceed to checkout/i }).click();
   await page.waitForURL('**/members/checkout**', { timeout: 90000 });
-  await page.waitForTimeout(2000);
 
+  await page.waitForSelector('[placeholder*="coupon" i]', { state: 'visible', timeout: 15000 });
   await page.getByPlaceholder(/Enter your coupon/i).fill('FAKE123');
-  await page.waitForTimeout(1000);
 
   const couponPromise = page.waitForResponse(
-    res => res.url().includes('api-cwa/coupon_validation'),
-    { timeout: 30000 }
+    res => res.url().includes('api-cwa/coupon_validation'), { timeout: 30000 }
   );
   await page.getByRole('button', { name: /apply/i }).click();
   console.log('⏳ Waiting for coupon API response...');
@@ -534,10 +476,14 @@ test('CS-09 — Invalid coupon code', async ({ page }) => {
   const couponRes = await couponPromise;
   couponApiResponse = await couponRes.json().catch(() => ({}));
   console.log('📥 Coupon Response:', JSON.stringify(couponApiResponse, null, 2));
-  await page.waitForTimeout(3000);
+
+  // Wait for error message on UI
+  await page.waitForSelector(
+    'text=/invalid|not valid|coupon.*not/i',
+    { state: 'visible', timeout: 10000 }
+  ).catch(() => {});
 
   const isInvalid = JSON.stringify(couponApiResponse).toLowerCase().includes('invalid') ||
-                    JSON.stringify(couponApiResponse).toLowerCase().includes('not valid') ||
                     couponApiResponse?.data?.coupon_status?.toLowerCase().includes('invalid');
   console.log(`🔍 Coupon invalid response: ${isInvalid}`);
   expect(isInvalid).toBe(true);
@@ -549,27 +495,28 @@ test('CS-10 — Empty coupon submit', async ({ page }) => {
 
   await page.goto(PREVIEW_URL, { waitUntil: 'domcontentloaded' });
   await detectPreviewPage(page);
-  await page.waitForTimeout(2000);
-
+  await page.waitForSelector('button', { state: 'visible', timeout: 10000 });
   await page.getByRole('button', { name: /access records/i }).first().click();
-  await page.waitForTimeout(1000);
+  await page.waitForSelector('input[type="email"]', { state: 'visible', timeout: 10000 });
   await page.locator('input[type="email"]').first().fill(`test${Date.now()}@example.com`);
-  await page.waitForTimeout(1000);
   await page.getByRole('button', { name: /proceed to checkout/i }).click();
   await page.waitForURL('**/members/checkout**', { timeout: 90000 });
-  await page.waitForTimeout(2000);
+  await page.waitForSelector('[placeholder*="coupon" i]', { state: 'visible', timeout: 15000 });
 
-  // Leave coupon field empty and click Apply
   let apiCalled = false;
   page.on('request', req => {
     if (req.url().includes('api-cwa/coupon_validation')) apiCalled = true;
   });
 
   await page.getByRole('button', { name: /apply/i }).click();
-  await page.waitForTimeout(3000);
+
+  // Wait briefly for any validation message to appear
+  await page.waitForSelector(
+    'text=/enter.*coupon|coupon.*required|please.*enter/i',
+    { state: 'visible', timeout: 5000 }
+  ).catch(() => {});
 
   console.log(`🔍 Coupon API called on empty submit: ${apiCalled}`);
-  // Either no API call, or UI shows validation error
   const validationMsg = await page.locator('text=/enter.*coupon|coupon.*required|please.*enter/i').isVisible().catch(() => false);
   console.log(`🔍 Validation message visible: ${validationMsg}`);
   console.log('✅ CS-10 COMPLETE — Empty coupon handled correctly');
@@ -577,7 +524,6 @@ test('CS-10 — Empty coupon submit', async ({ page }) => {
 
 test('CS-11 — Stolen card', async ({ page, context }) => {
   test.setTimeout(300000);
-
   context.on('response', async res => {
     if (res.url().includes('payment_intents') && res.url().includes('confirm')) {
       const body = await res.json().catch(() => ({}));
@@ -587,25 +533,19 @@ test('CS-11 — Stolen card', async ({ page, context }) => {
 
   await page.goto(PREVIEW_URL, { waitUntil: 'domcontentloaded' });
   await detectPreviewPage(page);
-  await page.waitForTimeout(2000);
-
+  await page.waitForSelector('button', { state: 'visible', timeout: 10000 });
   await page.getByRole('button', { name: /access records/i }).first().click();
-  await page.waitForTimeout(1000);
+  await page.waitForSelector('input[type="email"]', { state: 'visible', timeout: 10000 });
   await page.locator('input[type="email"]').first().fill(`test${Date.now()}@example.com`);
-  await page.waitForTimeout(1000);
   await page.getByRole('button', { name: /proceed to checkout/i }).click();
   await page.waitForURL('**/members/checkout**', { timeout: 90000 });
-  await page.waitForTimeout(2000);
-
-  // Stolen card — decline code: stolen_card
   await completeCheckout(page, '4000000000009979');
-  await page.waitForTimeout(10000);
+  await waitForDeclineError(page);
   console.log('✅ CS-11 COMPLETE — Stolen card declined');
 });
 
 test('CS-12 — Do Not Honor (generic decline)', async ({ page, context }) => {
   test.setTimeout(300000);
-
   context.on('response', async res => {
     if (res.url().includes('payment_intents') && res.url().includes('confirm')) {
       const body = await res.json().catch(() => ({}));
@@ -615,25 +555,19 @@ test('CS-12 — Do Not Honor (generic decline)', async ({ page, context }) => {
 
   await page.goto(PREVIEW_URL, { waitUntil: 'domcontentloaded' });
   await detectPreviewPage(page);
-  await page.waitForTimeout(2000);
-
+  await page.waitForSelector('button', { state: 'visible', timeout: 10000 });
   await page.getByRole('button', { name: /access records/i }).first().click();
-  await page.waitForTimeout(1000);
+  await page.waitForSelector('input[type="email"]', { state: 'visible', timeout: 10000 });
   await page.locator('input[type="email"]').first().fill(`test${Date.now()}@example.com`);
-  await page.waitForTimeout(1000);
   await page.getByRole('button', { name: /proceed to checkout/i }).click();
   await page.waitForURL('**/members/checkout**', { timeout: 90000 });
-  await page.waitForTimeout(2000);
-
-  // Do Not Honor — decline code: card_declined / do_not_honor
   await completeCheckout(page, '4000000000000341');
-  await page.waitForTimeout(10000);
+  await waitForDeclineError(page);
   console.log('✅ CS-12 COMPLETE — Do Not Honor card declined');
 });
 
 test('CS-13 — Card processing error', async ({ page, context }) => {
   test.setTimeout(300000);
-
   context.on('response', async res => {
     if (res.url().includes('payment_intents') && res.url().includes('confirm')) {
       const body = await res.json().catch(() => ({}));
@@ -643,18 +577,13 @@ test('CS-13 — Card processing error', async ({ page, context }) => {
 
   await page.goto(PREVIEW_URL, { waitUntil: 'domcontentloaded' });
   await detectPreviewPage(page);
-  await page.waitForTimeout(2000);
-
+  await page.waitForSelector('button', { state: 'visible', timeout: 10000 });
   await page.getByRole('button', { name: /access records/i }).first().click();
-  await page.waitForTimeout(1000);
+  await page.waitForSelector('input[type="email"]', { state: 'visible', timeout: 10000 });
   await page.locator('input[type="email"]').first().fill(`test${Date.now()}@example.com`);
-  await page.waitForTimeout(1000);
   await page.getByRole('button', { name: /proceed to checkout/i }).click();
   await page.waitForURL('**/members/checkout**', { timeout: 90000 });
-  await page.waitForTimeout(2000);
-
-  // Processing error card — decline code: processing_error
   await completeCheckout(page, '4000000000000119');
-  await page.waitForTimeout(10000);
+  await waitForDeclineError(page);
   console.log('✅ CS-13 COMPLETE — Processing error card declined');
 });
