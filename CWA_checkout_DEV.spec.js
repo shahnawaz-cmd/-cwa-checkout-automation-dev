@@ -343,17 +343,17 @@ test('CS-07 — Coupon validation and Successful Checkout', async ({ page }) => 
   console.log('✅ Coupon applied — success message confirmed');
   await page.waitForTimeout(2000);
 
-  // Wait for payment-intent API to be called and captured after coupon is applied
+  // payment-intent is captured by the page.on('response') listener above;
+  // poll briefly in case it fires slightly after coupon response
   console.log('⏳ Waiting for payment-intent API...');
-  const paymentIntentPromise = page.waitForResponse(
-    res => res.url().includes('api/checkout/payment-intent'),
-    { timeout: 30000 }
-  );
-  const paymentIntentRes = await paymentIntentPromise;
-  paymentIntentResponse = await paymentIntentRes.json().catch(() => ({}));
+  const piDeadline = Date.now() + 15000;
+  while (!paymentIntentResponse && Date.now() < piDeadline) {
+    await page.waitForTimeout(500);
+  }
   console.log('📥 Payment Intent captured:', JSON.stringify(paymentIntentResponse, null, 2));
   expect(paymentIntentResponse).not.toBeNull();
   console.log('✅ Payment intent loaded');
+  await page.waitForTimeout(2000);
   await page.waitForTimeout(2000);
 
   // Now fill out the card form
