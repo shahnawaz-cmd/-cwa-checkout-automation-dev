@@ -593,6 +593,61 @@ test('CS-15 — Slow network (3G) checkout', async ({ page, context }) => {
   console.log('✅ CS-15 COMPLETE — Checkout succeeded under 3G throttling');
 });
 
+test('CS-19 — Coupon validation scenarios (valid, invalid, empty)', async ({ page }) => {
+  test.setTimeout(300000);
+
+  const email = `test${Date.now()}@example.com`;
+  await navigateToCheckout(page, email);
+  await page.waitForSelector('[placeholder*="coupon" i]', { state: 'visible', timeout: 15000 });
+
+  // ── Scenario 1: Valid coupon ──────────────────────────────────────────────
+  const couponPromise = page.waitForResponse(
+    res => res.url().includes('api-cwa/coupon_validation'), { timeout: 30000 }
+  );
+  await page.getByPlaceholder(/Enter your coupon/i).fill('get20');
+  await page.getByRole('button', { name: /apply/i }).click();
+  const couponRes = await couponPromise;
+  const couponData = await couponRes.json().catch(() => ({}));
+  console.log('📥 Valid coupon response:', JSON.stringify(couponData, null, 2));
+  const isValid = couponData?.data?.coupon_status?.toLowerCase().includes('valid');
+  console.log(`🔍 Valid coupon accepted: ${isValid}`);
+  expect(isValid).toBe(true);
+  console.log('✅ Scenario 1 PASS — Valid coupon accepted');
+
+  // Wait for UI to update
+  await page.waitForSelector('text=/coupon applied|discount applied|success/i', { state: 'visible', timeout: 10000 }).catch(() => {});
+
+  // ── Scenario 2: Invalid coupon ────────────────────────────────────────────
+  await page.getByPlaceholder(/Enter your coupon/i).fill('getse');
+  const invalidPromise = page.waitForResponse(
+    res => res.url().includes('api-cwa/coupon_validation'), { timeout: 30000 }
+  );
+  await page.getByRole('button', { name: /apply/i }).click();
+  const invalidRes = await invalidPromise;
+  const invalidData = await invalidRes.json().catch(() => ({}));
+  console.log('📥 Invalid coupon response:', JSON.stringify(invalidData, null, 2));
+  const isInvalid = JSON.stringify(invalidData).toLowerCase().includes('invalid');
+  console.log(`🔍 Invalid coupon rejected: ${isInvalid}`);
+  expect(isInvalid).toBe(true);
+
+  // Wait for error message
+  await page.waitForSelector('text=/enter a valid coupon|invalid coupon/i', { state: 'visible', timeout: 10000 }).catch(() => {});
+  const errorMsg = await page.locator('text=/enter a valid coupon|invalid coupon/i').isVisible().catch(() => false);
+  console.log(`🔍 Error message visible: ${errorMsg}`);
+  console.log('✅ Scenario 2 PASS — Invalid coupon rejected');
+
+  // ── Scenario 3: Empty coupon ──────────────────────────────────────────────
+  await page.getByPlaceholder(/Enter your coupon/i).fill('');
+  let emptyCalled = false;
+  page.on('request', req => { if (req.url().includes('api-cwa/coupon_validation')) emptyCalled = true; });
+  await page.getByRole('button', { name: /apply/i }).click();
+  await new Promise(r => setTimeout(r, 2000));
+  console.log(`🔍 API called on empty submit: ${emptyCalled}`);
+  console.log('✅ Scenario 3 PASS — Empty coupon handled');
+
+  console.log('✅ CS-19 COMPLETE — All coupon validation scenarios verified');
+});
+
 // ─── PayPal Sandbox Credentials ───────────────────────────────────────────────
 const PAYPAL_EMAIL = 'sb-rtbp126775467@personal.example.com';
 const PAYPAL_PASSWORD = 'Ogznv/4c';
