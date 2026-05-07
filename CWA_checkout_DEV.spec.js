@@ -190,42 +190,59 @@ test('CS-06 — 3D Secure success', async ({ page }) => {
   await page.getByRole('textbox', { name: 'Email Address *' }).press('Enter');
 
   await page.waitForURL('**/members/checkout**', { timeout: 90000 });
+
+  // Wait for name field to be ready before filling
+  await page.waitForSelector('input[placeholder="Enter your name"]', { state: 'visible', timeout: 15000 });
   await page.getByRole('textbox', { name: 'Enter your name' }).fill('Shahnawaz');
 
+  // Wait for all 3 Stripe iframes to mount
+  await page.waitForFunction(
+    () => Array.from(document.querySelectorAll('iframe')).filter(f => f.src && f.src.includes('stripe.com') && f.src.includes('componentName=card')).length >= 3,
+    { timeout: 30000 }
+  );
   await page.frameLocator('iframe[title="Secure card number input frame"]').getByRole('textbox', { name: 'Credit or debit card number' }).fill('4000002760003184');
   await page.frameLocator('iframe[title="Secure expiration date input frame"]').getByRole('textbox', { name: 'Credit or debit card' }).fill('02 / 656');
   await page.frameLocator('iframe[title="Secure CVC input frame"]').getByRole('textbox', { name: 'Credit or debit card CVC/CVV' }).fill('265');
-
   await page.getByRole('textbox', { name: 'ZIP / Postal Code*' }).fill('74900');
+
+  // Wait for Pay button to be enabled before clicking
+  await page.waitForSelector('button:has-text("Pay $"):not([disabled])', { state: 'visible', timeout: 15000 });
   await page.getByRole('button', { name: 'Pay $' }).click();
 
-  // Poll for 3DS authorize button across all frames (up to 60s)
-  console.log('⏳ Polling for 3DS challenge button...');
+  // Smart wait: poll for 3DS frame appearance using frameattached event + button check
+  console.log('⏳ Waiting for 3DS challenge frame...');
   let clicked = false;
-  const deadline = Date.now() + 60000;
-  while (!clicked && Date.now() < deadline) {
-    await page.waitForTimeout(2000);
-    for (const f of page.frames()) {
-      try {
-        const el = await f.$('#test-source-authorize-3ds');
-        if (el) {
-          await el.click();
-          clicked = true;
-          console.log(`✅ 3DS clicked in frame: ${f.url().substring(0, 80)}`);
-          break;
-        }
-      } catch (_) {}
-    }
-  }
+  await new Promise((resolve) => {
+    const check = async () => {
+      for (const f of page.frames()) {
+        try {
+          const el = await f.$('#test-source-authorize-3ds');
+          if (el) {
+            await el.click();
+            clicked = true;
+            console.log(`✅ 3DS clicked in frame: ${f.url().substring(0, 80)}`);
+            return resolve();
+          }
+        } catch (_) {}
+      }
+    };
+    // Check on every new frame attached
+    page.on('frameattached', check);
+    // Also check existing frames immediately and every 1s as fallback
+    const interval = setInterval(check, 1000);
+    setTimeout(() => { clearInterval(interval); resolve(); }, 60000);
+  });
 
   if (!clicked) console.log('⚠️ 3DS button not found after 60s');
 
   await page.waitForURL('**/success-page**', { timeout: 180000 });
   console.log('✅ Landed on success page');
-  await page.waitForTimeout(2000);
+  // Wait for page content to settle instead of fixed delay
+  await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
   await page.close();
   console.log('✅ CS-06 COMPLETE');
 });
+
 test('CS-06B — 3D Secure failure', async ({ page }) => {
   test.setTimeout(300000);
 
@@ -237,38 +254,48 @@ test('CS-06B — 3D Secure failure', async ({ page }) => {
   await page.getByRole('textbox', { name: 'Email Address *' }).press('Enter');
 
   await page.waitForURL('**/members/checkout**', { timeout: 90000 });
+
+  await page.waitForSelector('input[placeholder="Enter your name"]', { state: 'visible', timeout: 15000 });
   await page.getByRole('textbox', { name: 'Enter your name' }).fill('Shahnawaz');
 
-  // 3DS failure card: triggers 3DS challenge but authentication fails
+  await page.waitForFunction(
+    () => Array.from(document.querySelectorAll('iframe')).filter(f => f.src && f.src.includes('stripe.com') && f.src.includes('componentName=card')).length >= 3,
+    { timeout: 30000 }
+  );
+  // 3DS failure card
   await page.frameLocator('iframe[title="Secure card number input frame"]').getByRole('textbox', { name: 'Credit or debit card number' }).fill('4000008260003178');
   await page.frameLocator('iframe[title="Secure expiration date input frame"]').getByRole('textbox', { name: 'Credit or debit card' }).fill('02 / 656');
   await page.frameLocator('iframe[title="Secure CVC input frame"]').getByRole('textbox', { name: 'Credit or debit card CVC/CVV' }).fill('265');
-
   await page.getByRole('textbox', { name: 'ZIP / Postal Code*' }).fill('74900');
+
+  await page.waitForSelector('button:has-text("Pay $"):not([disabled])', { state: 'visible', timeout: 15000 });
   await page.getByRole('button', { name: 'Pay $' }).click();
 
-  // Poll for 3DS fail button across all frames (up to 60s)
-  console.log('⏳ Polling for 3DS challenge button...');
+  // Smart wait: event-driven 3DS frame detection
+  console.log('⏳ Waiting for 3DS challenge frame...');
   let clicked = false;
-  const deadline = Date.now() + 60000;
-  while (!clicked && Date.now() < deadline) {
-    await page.waitForTimeout(2000);
-    for (const f of page.frames()) {
-      try {
-        const el = await f.$('#test-source-fail-3ds');
-        if (el) {
-          await el.click();
-          clicked = true;
-          console.log(`✅ 3DS fail clicked in frame: ${f.url().substring(0, 80)}`);
-          break;
-        }
-      } catch (_) {}
-    }
-  }
+  await new Promise((resolve) => {
+    const check = async () => {
+      for (const f of page.frames()) {
+        try {
+          const el = await f.$('#test-source-fail-3ds');
+          if (el) {
+            await el.click();
+            clicked = true;
+            console.log(`✅ 3DS fail clicked in frame: ${f.url().substring(0, 80)}`);
+            return resolve();
+          }
+        } catch (_) {}
+      }
+    };
+    page.on('frameattached', check);
+    const interval = setInterval(check, 1000);
+    setTimeout(() => { clearInterval(interval); resolve(); }, 60000);
+  });
 
   if (!clicked) console.log('⚠️ 3DS fail button not found after 60s');
 
-  // Wait for stripe error log API after 3DS failure
+  // Wait for log_stripe_error API — no fixed delay needed
   console.log('⏳ Waiting for log_stripe_error API...');
   const stripeErrRes = await page.waitForResponse(
     res => res.url().includes('api-cwa/log_stripe_error'),
