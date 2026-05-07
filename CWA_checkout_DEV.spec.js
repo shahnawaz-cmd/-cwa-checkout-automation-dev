@@ -181,54 +181,51 @@ test('CS-05 — Wrong CVC', async ({ page, context }) => {
 
 test('CS-06 — 3D Secure success', async ({ page }) => {
   test.setTimeout(300000);
-  
+
   await page.goto(PREVIEW_URL, { waitUntil: 'domcontentloaded' });
   await detectPreviewPage(page);
-  
-  // Access Records flow
+
   await page.getByRole('button', { name: 'Access Records' }).click();
   await page.getByRole('textbox', { name: 'Email Address *' }).fill(`test${Date.now()}@example.com`);
   await page.getByRole('textbox', { name: 'Email Address *' }).press('Enter');
-  
-  // Checkout flow
+
   await page.waitForURL('**/members/checkout**', { timeout: 90000 });
   await page.getByRole('textbox', { name: 'Enter your name' }).fill('Shahnawaz');
-  
-  // Fill Stripe fields
+
   await page.frameLocator('iframe[title="Secure card number input frame"]').getByRole('textbox', { name: 'Credit or debit card number' }).fill('4000002760003184');
   await page.frameLocator('iframe[title="Secure expiration date input frame"]').getByRole('textbox', { name: 'Credit or debit card' }).fill('02 / 656');
   await page.frameLocator('iframe[title="Secure CVC input frame"]').getByRole('textbox', { name: 'Credit or debit card CVC/CVV' }).fill('265');
-  
+
   await page.getByRole('textbox', { name: 'ZIP / Postal Code*' }).fill('74900');
   await page.getByRole('button', { name: 'Pay $' }).click();
-  
-  // 3DS Challenge
-  console.log('⏳ Waiting for 3DS challenge...');
-  const challengeFrame = page.frameLocator('iframe[name="stripe-challenge-frame"]');
-  const completeButton = challengeFrame.locator('#test-source-authorize-3ds, button:has-text("Complete")');
 
-  try {
-    await completeButton.waitFor({ state: 'visible', timeout: 30000 });
-    await completeButton.click();
-    console.log('✅ 3DS Challenge "Complete" button clicked');
-  } catch (err) {
-    console.log('⚠️ Could not click via Locator. Searching nested frames...');
-    const frames = page.frames();
-    for (const f of frames) {
-      if (f.url().includes('stripe.com') && (await f.$('#test-source-authorize-3ds, button:has-text("Complete")'))) {
-        await f.click('#test-source-authorize-3ds, button:has-text("Complete")');
-        console.log('✅ 3DS Challenge completed via fallback frame search');
-        break;
-      }
+  // Poll for 3DS authorize button across all frames (up to 60s)
+  console.log('⏳ Polling for 3DS challenge button...');
+  let clicked = false;
+  const deadline = Date.now() + 60000;
+  while (!clicked && Date.now() < deadline) {
+    await page.waitForTimeout(2000);
+    for (const f of page.frames()) {
+      try {
+        const el = await f.$('#test-source-authorize-3ds');
+        if (el) {
+          await el.click();
+          clicked = true;
+          console.log(`✅ 3DS clicked in frame: ${f.url().substring(0, 80)}`);
+          break;
+        }
+      } catch (_) {}
     }
   }
-  
-  // Success confirmation
-  
+
+  if (!clicked) console.log('⚠️ 3DS button not found after 60s');
+
   await page.waitForURL('**/success-page**', { timeout: 120000 });
+  console.log('✅ Landed on success page');
+  await page.waitForTimeout(2000);
+  await page.close();
   console.log('✅ CS-06 COMPLETE');
 });
-
 test('CS-07 — Coupon validation and Successful Checkout', async ({ page }) => {
   test.setTimeout(300000);
 
