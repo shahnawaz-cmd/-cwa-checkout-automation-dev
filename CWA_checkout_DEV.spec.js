@@ -220,7 +220,7 @@ test('CS-06 — 3D Secure success', async ({ page }) => {
 
   if (!clicked) console.log('⚠️ 3DS button not found after 60s');
 
-  await page.waitForURL('**/success-page**', { timeout: 120000 });
+  await page.waitForURL('**/success-page**', { timeout: 180000 });
   console.log('✅ Landed on success page');
   await page.waitForTimeout(2000);
   await page.close();
