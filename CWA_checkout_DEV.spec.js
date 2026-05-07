@@ -392,3 +392,81 @@ test('CS-07 — Coupon validation and Successful Checkout', async ({ page }) => 
   console.log('✅ CS-07 SUCCESS — Coupon applied and payment complete');
 });
 
+
+test('CS-08 — Same-session duplicate purchase redirect', async ({ page }) => {
+  test.setTimeout(300000);
+
+  const email = `test${Date.now()}@example.com`;
+
+  // ── Step 1: Complete a full CS-01 checkout ──────────────────────────────────
+  let dashboardApiResponse = null;
+  page.on('response', async res => {
+    if (res.url().includes('api-cwa/get-dashboard-data')) {
+      dashboardApiResponse = await res.json().catch(() => ({}));
+      console.log('📥 Dashboard API Response:', JSON.stringify(dashboardApiResponse, null, 2));
+    }
+  });
+
+  await page.goto(PREVIEW_URL, { waitUntil: 'domcontentloaded' });
+  await detectPreviewPage(page);
+  await page.waitForTimeout(2000);
+
+  await page.getByRole('button', { name: /access records/i }).first().click();
+  await page.waitForTimeout(1500);
+
+  await page.locator('input[type="email"]').first().fill(email);
+  await page.waitForTimeout(1000);
+
+  await page.getByRole('button', { name: /proceed to checkout/i }).click();
+  await page.waitForURL('**/members/checkout**', { timeout: 90000 });
+  await page.waitForTimeout(2000);
+
+
+  // Set up payment-update promise BEFORE submitting payment
+  const paymentUpdatePromise = page.waitForResponse(
+    res => res.url().includes('api-cwa/payment-update'),
+    { timeout: 60000 }
+  );
+  await completeCheckout(page);
+  await page.waitForURL('**/success-page**', { timeout: 60000 });
+  console.log('✅ CS-01 flow complete — landed on success-page');
+  await page.waitForTimeout(3000);
+
+  const paymentRes = await paymentUpdatePromise;
+  const paymentData = await paymentRes.json().catch(() => ({}));
+  console.log('📥 payment-update Response:', JSON.stringify(paymentData, null, 2));
+  await page.waitForTimeout(2000);
+
+  await page.goto(`${BASE_URL}members/dashboard`, { waitUntil: 'domcontentloaded' });
+  console.log('✅ Landed on dashboard');
+  await page.waitForTimeout(4000);
+
+  // ── Step 2: Attempt duplicate purchase with same email in same session ───────
+  console.log('🔄 Attempting duplicate purchase with same email:', email);
+  await page.goto(PREVIEW_URL, { waitUntil: 'domcontentloaded' });
+  await detectPreviewPage(page);
+  await page.waitForTimeout(2000);
+
+  await page.getByRole('button', { name: /access records/i }).first().click();
+  await page.waitForTimeout(1500);
+
+  await page.locator('input[type="email"]').first().fill(email);
+  await page.waitForTimeout(1000);
+
+  await page.getByRole('button', { name: /proceed to checkout/i }).click();
+  await page.waitForTimeout(5000);
+
+  const currentUrl = page.url();
+  console.log(`🔍 Current URL after duplicate attempt: ${currentUrl}`);
+  await page.waitForTimeout(3000);
+
+  const redirectedToCheckout = currentUrl.includes('/members/checkout');
+  if (redirectedToCheckout) {
+    console.log('❌ FAIL — User was redirected to checkout (duplicate not blocked)');
+  } else {
+    console.log('✅ PASS — User was NOT redirected to checkout (duplicate blocked)');
+  }
+
+  expect(redirectedToCheckout).toBe(false);
+  console.log('✅ CS-08 COMPLETE — Same-session duplicate purchase redirect confirmed');
+});
